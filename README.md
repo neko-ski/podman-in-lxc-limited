@@ -184,3 +184,6 @@ sudo podman -v
 6. **systemd unit hack 风险**：把 podman 的 systemd unit 拷贝并命名为 docker.service 是变通做法，可能与面板或其他软件期望的 docker 行为不完全一致（尤其是 socket 名、环境变量、PID、启动参数等）。如果你使用面板（如 1Panel），推荐先在测试环境验证。  
 
 ---
+
+
+[此教程参考了aspnmy的部分思路，在此致谢](https://github.com/aspnmy/1Panel_Bt_in_podman_rootless)
