@@ -3,10 +3,10 @@
 # Podman in LXC limited environment 一键安装脚本
 # 基于 https://github.com/neko-ski/podman-in-lxc-limited README
 # 注意：需要 root/sudo 权限，大部分操作会覆盖配置，请备份！
-# 可选：docker-compose 版本（改成你想要的或设为 auto 以自动获取最新 release）
-# 默认值为 auto（从 GitHub Releases 获取最新 tag），如需固定版本可在运行时通过环境变量覆盖，例如：
+# 可选：docker-compose 版本（改成你想要的，默认固定为 v5.0.0；可通过环境变量覆盖）
+# 如需其它版本可在运行时通过环境变量覆盖，例如：
 #   COMPOSE_VER=v2.29.7 sudo bash podman-in-lxc-limited.sh
-COMPOSE_VER="${COMPOSE_VER:-auto}"
+COMPOSE_VER="${COMPOSE_VER:-v5.0.0}"
 # 当自动检测失败时回退到该版本（可按需修改）
 COMPOSE_FALLBACK="v5.0.0"
 
@@ -171,18 +171,24 @@ if printf '%s' "${COMPOSE_DOWNLOAD_BASE}" | grep -qi 'jsdeliver'; then
     COMPOSE_DOWNLOAD_BASE=$(printf '%s' "${COMPOSE_DOWNLOAD_BASE}" | sed -E 's/jsdeliver/cdn.jsdelivr.net/Ig')
 fi
 
-# 构建候选下载 URL 列表：仅包含官方 GitHub（API/browser_download_url 或 releases 下载）和 jsDelivr 镜像
+# 构建候选下载 URL 列表：固定为 v5.0.0 的 GitHub releases 与 jsDelivr 加速版本（x86_64 与 aarch64）
+asset_x86="docker-compose-linux-x86_64"
+asset_arm="docker-compose-linux-aarch64"
+# 优先顺序：先尝试与当前主机架构匹配的两个链接（GitHub -> jsDelivr），然后再尝试另一架构的两个链接
 candidates=()
-if response=$(curl -fsS --connect-timeout 10 "https://api.github.com/repos/docker/compose/releases/tags/${COMPOSE_VER}" 2>/dev/null || true); then
-    api_url=$(printf '%s' "$response" | grep -oE '"browser_download_url":\s*"[^"]+"' | sed -E 's/"browser_download_url":\s*"([^"]+)"/\1/' | grep "${asset}" || true)
-    if [ -n "${api_url}" ]; then
-        candidates+=("${api_url}")
-    fi
+if [ "${asset}" = "${asset_arm}" ] || [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then
+    # 当前为 aarch64，先尝试 aarch64，再尝试 x86_64
+    candidates+=("https://github.com/docker/compose/releases/download/${COMPOSE_VER}/${asset_arm}")
+    candidates+=("https://cdn.jsdelivr.net/gh/docker/compose/releases/download/${COMPOSE_VER}/${asset_arm}")
+    candidates+=("https://github.com/docker/compose/releases/download/${COMPOSE_VER}/${asset_x86}")
+    candidates+=("https://cdn.jsdelivr.net/gh/docker/compose/releases/download/${COMPOSE_VER}/${asset_x86}")
+else
+    # 默认或 x86_64，先尝试 x86_64，再尝试 aarch64
+    candidates+=("https://github.com/docker/compose/releases/download/${COMPOSE_VER}/${asset_x86}")
+    candidates+=("https://cdn.jsdelivr.net/gh/docker/compose/releases/download/${COMPOSE_VER}/${asset_x86}")
+    candidates+=("https://github.com/docker/compose/releases/download/${COMPOSE_VER}/${asset_arm}")
+    candidates+=("https://cdn.jsdelivr.net/gh/docker/compose/releases/download/${COMPOSE_VER}/${asset_arm}")
 fi
-# 官方 GitHub releases 下载 URL
-candidates+=("https://github.com/docker/compose/releases/download/${COMPOSE_VER}/${asset}")
-# jsDelivr 镜像作为备选
-candidates+=("https://cdn.jsdelivr.net/gh/docker/compose/releases/download/${COMPOSE_VER}/${asset}")
 
 # IPv4/IPv6 可达性检测：确定优先使用哪种协议（若仅一方可达则优先使用）
 ipv6_ok=0; ipv4_ok=0
