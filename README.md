@@ -1,4 +1,4 @@
---- [中文](https://github.com/neko-ski/podman-in-lxc-limited/readme-zh.md)
+--- [中文](https://github.com/neko-ski/podman-in-lxc-limited/blob/main/readme-zh.md)
 
 ## This Tutorial — Running Native Containers on an LXC-Restricted Kernel Server Environment (Example: Debian 13)
 
