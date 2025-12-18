@@ -5,7 +5,7 @@
 # 注意：需要 root/sudo 权限，大部分操作会覆盖配置，请备份！
 # 可选：docker-compose 版本（改成你想要的，默认固定为 v5.0.0；可通过环境变量覆盖）
 # 如需其它版本可在运行时通过环境变量覆盖，例如：
-#   COMPOSE_VER=v2.29.7 sudo bash podman-in-lxc-limited.sh
+#   COMPOSE_VER=v5.0.0 sudo bash podman-in-lxc-limited.sh
 COMPOSE_VER="${COMPOSE_VER:-v5.0.0}"
 # 当自动检测失败时回退到该版本（可按需修改）
 COMPOSE_FALLBACK="v5.0.0"
@@ -27,6 +27,8 @@ echo "Select language / 选择语言:"
 echo "1) English"
 echo "2) 中文"
 read -rp "Choice [1/2]: " LANG_CHOICE
+# Trim CR/LF and surrounding whitespace to tolerate Windows CRLF line endings or extra spaces
+LANG_CHOICE="$(printf '%s' "${LANG_CHOICE:-}" | tr -d '\r' | tr -d '[:space:]')"
 if [ "$LANG_CHOICE" != "1" ] && [ "$LANG_CHOICE" != "2" ]; then
     echo "Invalid choice, defaulting to English / 无效选择，默认 English"
     LANG_CHOICE=1
