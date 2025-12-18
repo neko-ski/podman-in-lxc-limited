@@ -8,7 +8,7 @@
 #   COMPOSE_VER=v2.29.7 sudo bash podman-in-lxc-limited.sh
 COMPOSE_VER="${COMPOSE_VER:-auto}"
 # 当自动检测失败时回退到该版本（可按需修改）
-COMPOSE_FALLBACK="v3.0.0"
+COMPOSE_FALLBACK="v5.0.0"
 
 set -euo pipefail  # 出错退出并开启严格模式
 IFS=$'\n\t'
@@ -106,16 +106,33 @@ else
 fi
 
 say "5. Install specified docker-compose version (v2 binary; v1 via apt)..." "5. 安装指定版本 docker-compose (v2 二进制，v1 由 apt 提供)..."
-# 若 COMPOSE_VER 设置为 auto（默认），则尝试通过 GitHub API 获取最新 release 的 tag_name
+# 若 COMPOSE_VER 设置为 auto（默认），则尝试通过 GitHub API 获取最新 release 的 tag_name，若失败则使用多种回退方式
 if [ "${COMPOSE_VER}" = "auto" ] || [ -z "${COMPOSE_VER}" ]; then
     say "Detecting latest docker-compose version..." "检测 docker-compose 最新版本..."
-    response=$(curl -fsSL "https://api.github.com/repos/docker/compose/releases/latest" 2>/dev/null || true)
-    latest_tag=$(printf '%s' "$response" | grep -m1 '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || true)
+
+    latest_tag=""
+    # 优先使用 GitHub API（如果网络允许）
+    response=$(curl -fsS --connect-timeout 10 --max-time 30 "https://api.github.com/repos/docker/compose/releases/latest" 2>/dev/null || true)
+    latest_tag=$(printf '%s' "$response" | grep -m1 '"tag_name":' | sed -E 's/.*"([^\"]+)".*/\1/' || true)
+
+    # 如果 API 不可用，尝试通过 releases/latest 的重定向获取 tag
+    if [ -z "${latest_tag}" ]; then
+        redirect_url=$(curl -fsS -I -L "https://cdn.jsdeliver.net/gh/docker/compose/releases/latest" 2>/dev/null | grep -i '^location:' | tail -n1 | awk '{print $2}' | tr -d '\r' || true)
+        if [ -n "${redirect_url}" ]; then
+            latest_tag=$(basename "${redirect_url}")
+        else
+            # 最后手段：直接抓取 HTML 并尝试解析 tag 字样
+            html=$(curl -fsS "https://github.com/docker/compose/releases/latest" 2>/dev/null || true)
+            latest_tag=$(printf '%s' "$html" | grep -m1 -oE 'tag/[vV]?[0-9]+\.[0-9]+\.[0-9A-Za-z\.-]+' | sed 's|.*/||' || true)
+        fi
+    fi
+
     if [ -n "${latest_tag}" ]; then
         COMPOSE_VER="${latest_tag}"
         say "Found latest version: ${COMPOSE_VER}" "获取到最新版本: ${COMPOSE_VER}"
     else
         say "Warning: cannot fetch latest version from GitHub; falling back to ${COMPOSE_FALLBACK}" "警告：无法从 GitHub 获取最新版本，回退到 ${COMPOSE_FALLBACK}"
+        say "Repository: https://github.com/docker/compose" "仓库地址: https://github.com/docker/compose"
         COMPOSE_VER="${COMPOSE_FALLBACK}"
     fi
 else
@@ -139,9 +156,13 @@ if command -v docker-compose >/dev/null 2>&1; then
     fi
 fi
 
+# 可通过环境变量 COMPOSE_DOWNLOAD_BASE 指定备用下载基地址（例如使用镜像站）
+COMPOSE_DOWNLOAD_BASE="${COMPOSE_DOWNLOAD_BASE:-https://github.com/docker/compose/releases/download}"
+
 tmpfile=$(mktemp)
-url="https://github.com/docker/compose/releases/download/${COMPOSE_VER}/${asset}"
-if curl -fSL -o "${tmpfile}" "${url}"; then
+url="${COMPOSE_DOWNLOAD_BASE}/${COMPOSE_VER}/${asset}"
+# 使用更稳健的 curl 选项：重试、重试间隔、连接超时
+if curl -fSL --retry 5 --retry-connrefused --retry-delay 3 --connect-timeout 10 -o "${tmpfile}" "${url}"; then
     size=$(wc -c < "${tmpfile}" 2>/dev/null || echo 0)
     # 某些发布的二进制会较小，但太小通常表示错误页面或 HTML，设阈值为 20KB
     if [ "${size}" -lt 20000 ]; then
@@ -163,7 +184,8 @@ if curl -fSL -o "${tmpfile}" "${url}"; then
         fi
     fi
 else
-    say "Warning: download of docker-compose ${COMPOSE_VER} failed; skipping v2 installation." "警告：下载 docker-compose ${COMPOSE_VER} 失败，跳过 v2 安装。"
+    say "Warning: download of docker-compose ${COMPOSE_VER} from ${url} failed; skipping v2 installation." "警告：从 ${url} 下载 docker-compose ${COMPOSE_VER} 失败，跳过 v2 安装。"
+    say "If you are behind a firewall or your network blocks GitHub, consider setting COMPOSE_DOWNLOAD_BASE to a reachable mirror or download manually from: https://github.com/docker/compose/releases" "如果您处于防火墙后或网络屏蔽 GitHub，请考虑将 COMPOSE_DOWNLOAD_BASE 指向可用镜像，或手动从 https://github.com/docker/compose/releases 下载。"
     rm -f "${tmpfile}" || true
 fi
 
