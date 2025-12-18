@@ -18,6 +18,12 @@ apt update && apt install -y sudo curl && curl -L -o install.sh https://raw.gith
 
 ```
 
+## 中国加速
+
+```bash
+apt update && apt install -y sudo curl && curl -L -o install.sh https://cdn.jsdelivr.net/gh/neko-ski/podman-in-lxc-limited@main/install.sh && chmod +x install.sh && sudo ./install.sh && rm -f install.sh
+
+```
 
 ## 在 Euserv IPv6-only 服务器上的验证（依次执行命令，需要 root 权限或 sudo）
 
