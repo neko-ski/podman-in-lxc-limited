@@ -302,6 +302,12 @@ fi
 say "7. Enable linger for docker_usr (keep user systemd running when not logged in)..." "7. 为 docker_usr 启用 linger（无人登录时保持 user systemd 运行）..."
 sudo loginctl enable-linger docker_usr
 
+# 尝试立即为 docker_usr 启动 user systemd 下的 podman.socket（直接尝试并记录错误，若失败则用 dbus-run-session 回退）
+sleep 1
+sudo -u docker_usr XDG_RUNTIME_DIR=/run/user/1000 systemctl --user enable --now podman.socket 2>/tmp/podman_enable_direct.err || \
+    (command -v dbus-run-session >/dev/null 2>&1 && sudo -u docker_usr dbus-run-session -- sh -c 'XDG_RUNTIME_DIR=/run/user/1000 systemctl --user enable --now podman.socket' 2>>/tmp/podman_enable_direct.err) || true
+say "If enabling docker_usr user socket failed, logs are available at /tmp/podman_enable_direct.err" "如果为 docker_usr 启用用户 socket 失败，日志可在 /tmp/podman_enable_direct.err 查看。"
+
 say "8. Enable Podman system socket and enable user socket for docker_usr..." "8. 启用 Podman system socket 并为 docker_usr 启用 user socket..."
 sudo systemctl enable --now podman.socket
 
