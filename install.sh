@@ -157,7 +157,7 @@ if command -v docker-compose >/dev/null 2>&1; then
 fi
 
 # 可通过环境变量 COMPOSE_DOWNLOAD_BASE 指定备用下载基地址（例如使用镜像站）
-COMPOSE_DOWNLOAD_BASE="${COMPOSE_DOWNLOAD_BASE:-https://cdn.jsdeliver.net/docker/compose/releases/download}"
+COMPOSE_DOWNLOAD_BASE="${COMPOSE_DOWNLOAD_BASE:-https://cdn.jsdeliver.net/gh/docker/compose/releases/download}"
 
 tmpfile=$(mktemp)
 url="${COMPOSE_DOWNLOAD_BASE}/${COMPOSE_VER}/${asset}"
