@@ -1,4 +1,4 @@
---- [English](https://github.com/neko-ski/podman-in-lxc-limited/readme.md)
+--- [English](https://github.com/neko-ski/podman-in-lxc-limitedblob/main/README.md)
 
 ## 本教程：在 LXC 受限内核的服务器环境下运行“原生”容器（示例以 Debian 13 为准）
 
