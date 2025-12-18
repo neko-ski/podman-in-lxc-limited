@@ -117,7 +117,7 @@ if [ "${COMPOSE_VER}" = "auto" ] || [ -z "${COMPOSE_VER}" ]; then
 
     # 如果 API 不可用，尝试通过 releases/latest 的重定向获取 tag
     if [ -z "${latest_tag}" ]; then
-        redirect_url=$(curl -fsS -I -L "https://cdn.jsdeliver.net/gh/docker/compose/releases/latest" 2>/dev/null | grep -i '^location:' | tail -n1 | awk '{print $2}' | tr -d '\r' || true)
+        redirect_url=$(curl -fsS -I -L "https://github.com/docker/compose/releases/latest" 2>/dev/null | grep -i '^location:' | tail -n1 | awk '{print $2}' | tr -d '\r' || true)
         if [ -n "${redirect_url}" ]; then
             latest_tag=$(basename "${redirect_url}")
         else
@@ -157,7 +157,7 @@ if command -v docker-compose >/dev/null 2>&1; then
 fi
 
 # 可通过环境变量 COMPOSE_DOWNLOAD_BASE 指定备用下载基地址（例如使用镜像站）
-COMPOSE_DOWNLOAD_BASE="${COMPOSE_DOWNLOAD_BASE:-https://github.com/docker/compose/releases/download}"
+COMPOSE_DOWNLOAD_BASE="${COMPOSE_DOWNLOAD_BASE:-https://cdn.jsdeliver.net/docker/compose/releases/download}"
 
 tmpfile=$(mktemp)
 url="${COMPOSE_DOWNLOAD_BASE}/${COMPOSE_VER}/${asset}"
