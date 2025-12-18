@@ -14,7 +14,7 @@ LXC 受限内核的服务器无法运行原生 Docker 的常见原因包括：
 ### 0) 一键式安装执行脚本（推荐）
 
 ```bash
-apt update && apt install -y sudo curl && curl -L -o install.sh https://raw.githubusercontent.com/neko-ski/podman-in-lxc-limited/blob/main/install.sh && chmod +x install.sh && sudo ./install.sh && rm -f install.sh
+apt update && apt install -y sudo curl && curl -L -o install.sh https://raw.githubusercontent.com/neko-ski/podman-in-lxc-limited/main/install.sh && chmod +x install.sh && sudo ./install.sh && rm -f install.sh
 
 ```
 
