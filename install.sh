@@ -299,6 +299,71 @@ if [ -n "$groups_to_add" ]; then
     sudo usermod -aG "$groups_to_add" docker_usr || true
 fi
 
+# ---- 1Panel: 按教程顺序的严格执行块（idempotent, 可重入） ----
+say "Applying 1Panel sequence (install/check in tutorial order) and logging to /tmp/1panel_sequence.err" "按 1Panel 教程顺序执行，并将日志记录到 /tmp/1panel_sequence.err"
+: > /tmp/1panel_sequence.err
+{
+    # 1) Ensure core packages (podman, podman-docker, docker-compose (v1 via apt))
+    if ! command -v podman >/dev/null 2>&1; then
+        say "Installing podman and podman-docker (via apt)" "安装 podman 和 podman-docker (apt)"
+        sudo apt-get update >> /tmp/1panel_sequence.err 2>&1 || true
+        sudo apt-get install -y podman podman-docker >> /tmp/1panel_sequence.err 2>&1 || true
+    else
+        say "podman already installed; skipping" "已安装 podman；跳过"
+    fi
+    if ! command -v docker-compose >/dev/null 2>&1; then
+        say "Installing docker-compose (v1) via apt if available" "如可用则通过 apt 安装 docker-compose (v1)"
+        sudo apt-get install -y docker-compose >> /tmp/1panel_sequence.err 2>&1 || true
+    else
+        say "docker-compose (v1) already present; skipping" "已存在 docker-compose (v1)；跳过"
+    fi
+
+    # 2) Ensure docker-compose v2 binary (script earlier attempts this); double-check
+    if ! command -v docker-compose >/dev/null 2>&1 || ! docker-compose -v >/dev/null 2>&1; then
+        say "Note: docker-compose v2 may be installed earlier; verify manually if needed" "注意：docker-compose v2 可能已在前面安装；如需请手动验证"
+    fi
+
+    # 3) Enable system socket then user socket
+    say "Enabling system podman.socket and attempting to enable docker_usr user socket (idempotent)" "启用系统 podman.socket 并尝试启用 docker_usr 的用户 socket（幂等）"
+    sudo systemctl enable --now podman.socket >> /tmp/1panel_sequence.err 2>&1 || true
+    if [ -d /run/user/1000 ]; then
+        if sudo -u docker_usr XDG_RUNTIME_DIR=/run/user/1000 systemctl --user show-environment >/dev/null 2>&1; then
+            sudo -u docker_usr XDG_RUNTIME_DIR=/run/user/1000 systemctl --user enable --now podman.socket >> /tmp/1panel_sequence.err 2>&1 || true
+        elif command -v dbus-run-session >/dev/null 2>&1; then
+            sudo -u docker_usr dbus-run-session -- sh -c 'XDG_RUNTIME_DIR=/run/user/1000 systemctl --user enable --now podman.socket' >> /tmp/1panel_sequence.err 2>&1 || true
+        else
+            say "Warning: cannot contact docker_usr user systemd; skipping user unit enable (will be retried later)." "警告：无法联系 docker_usr 的 user systemd；跳过用户单元启用（稍后可重试）。"
+        fi
+    else
+        say "/run/user/1000 not found; skipping docker_usr user socket enable" "/run/user/1000 未找到；跳过 docker_usr 用户 socket 启用"
+    fi
+
+    # 4) Create symlinks (idempotent)
+    say "Creating socket symlinks for 1Panel compatibility" "为 1Panel 兼容创建 socket 软链接"
+    sudo ln -sf /run/user/1000/podman/podman.sock /var/run/docker.sock >> /tmp/1panel_sequence.err 2>&1 || true
+    sudo ln -sf /run/user/1000/podman/podman.sock /run/user/0/docker.sock >> /tmp/1panel_sequence.err 2>&1 || true
+    sudo -u docker_usr ln -sf /run/user/1000/podman/podman.sock /run/user/1000/docker.sock 2>/tmp/1panel_sequence.err || ln -sf /run/user/1000/podman/podman.sock /run/user/1000/docker.sock >> /tmp/1panel_sequence.err 2>&1 || true
+
+    # 5) Copy podman units to docker units for compatibility (idempotent)
+    if [ -f /lib/systemd/system/podman.service ]; then
+        sudo cp -f /lib/systemd/system/podman.service /lib/systemd/system/docker.service >> /tmp/1panel_sequence.err 2>&1 || true
+        sudo chmod +x /lib/systemd/system/docker.service >> /tmp/1panel_sequence.err 2>&1 || true
+    fi
+    if [ -f /lib/systemd/system/podman.socket ]; then
+        sudo cp -f /lib/systemd/system/podman.socket /lib/systemd/system/docker.socket >> /tmp/1panel_sequence.err 2>&1 || true
+        sudo chmod +x /lib/systemd/system/docker.socket >> /tmp/1panel_sequence.err 2>&1 || true
+    fi
+    sudo systemctl daemon-reload >> /tmp/1panel_sequence.err 2>&1 || true
+    sudo systemctl enable --now docker.service >> /tmp/1panel_sequence.err 2>&1 || true
+
+    # 6) Ensure iptables (recommended by 1Panel) if not present
+    if ! command -v iptables >/dev/null 2>&1; then
+        say "Installing iptables (recommended for 1Panel)" "安装 iptables（1Panel 推荐）"
+        sudo apt-get install -y iptables >> /tmp/1panel_sequence.err 2>&1 || true
+    fi
+} >> /tmp/1panel_sequence.err 2>&1 || true
+say "1Panel sequence completed (see /tmp/1panel_sequence.err for details if any)." "1Panel 顺序执行完成（如有详情请查看 /tmp/1panel_sequence.err）。"
+
 say "7. Enable linger for docker_usr (keep user systemd running when not logged in)..." "7. 为 docker_usr 启用 linger（无人登录时保持 user systemd 运行）..."
 sudo loginctl enable-linger docker_usr
 
@@ -446,6 +511,26 @@ verify_install() {
 
 if verify_install; then
     say "Proceeding with remaining steps..." "继续执行后续步骤..."
+
+    # 提供 1Panel 兼容适配的可选手动应用（默认: 不应用）
+    say "Optional: apply 1Panel compatibility adaptation now? This will set DOCKER_HOST in docker_usr's ~/.bash_profile (default: No)." "可选：是否立即应用 1Panel 兼容适配？这会在 docker_usr 的 ~/.bash_profile 中设置 DOCKER_HOST（默认：否）。"
+    read -r -p "Apply 1Panel adaptation (set DOCKER_HOST in docker_usr's ~/.bash_profile)? (y/N): " APPLY_1PANEL
+    APPLY_1PANEL="${APPLY_1PANEL:-N}"
+    if printf '%s' "${APPLY_1PANEL}" | grep -qiE '^[yY]'; then
+        if id docker_usr >/dev/null 2>&1; then
+            say "Applying 1Panel adaptation: setting DOCKER_HOST in /home/docker_usr/.bash_profile" "应用 1Panel 适配：在 /home/docker_usr/.bash_profile 中设置 DOCKER_HOST"
+            # 原则：若存在则覆盖（删除旧的 DOCKER_HOST 行），不存在则新增
+            sudo -u docker_usr bash -lc 'touch ~/.bash_profile && sed -i.bak "/^export DOCKER_HOST=/d" ~/.bash_profile || true; printf "%s\n" "export DOCKER_HOST=unix:///run/user/1000/docker.sock" >> ~/.bash_profile && source ~/.bash_profile || true'
+            # 也为当前脚本会话导出以便后续检查生效
+            export DOCKER_HOST=unix:///run/user/1000/docker.sock
+            say "1Panel adaptation applied. Note: existing sessions may need re-login to pick up ~/.bash_profile changes." "1Panel 适配已应用。注意：现有会话可能需要重新登录以生效。"
+        else
+            say "Warning: user docker_usr does not exist; cannot apply 1Panel adaptation." "警告：未找到用户 docker_usr，无法应用 1Panel 适配。"
+        fi
+    else
+        say "Skipping 1Panel adaptation (default)." "跳过 1Panel 适配（默认）。"
+    fi
+
 else
     say "Script aborted: verification did not pass. To skip verification and continue, set FORCE_CONTINUE=1 and retry." "脚本中止：验证未通过。若要跳过验证并继续，请设置环境变量 FORCE_CONTINUE=1 后重试。"
     if [ "${FORCE_CONTINUE:-0}" -eq 1 ]; then
@@ -461,6 +546,16 @@ sudo systemctl disable --now docker.service docker.socket || true
 sudo rm -f /etc/systemd/system/docker.{service,socket} || true
 sudo systemctl daemon-reload
 say "Removed replaced docker.service to avoid conflicts with rootless." "已移除替换的 docker.service，避免与 rootless 冲突。"
+
+# Troubleshooting logs summary
+say "If something failed, check the following log files for details:" "如果有步骤失败，请查看以下日志了解详情："
+say "  - /tmp/podman_enable_direct.err (user socket enable direct attempt)" "  - /tmp/podman_enable_direct.err（用户 socket 直接启用尝试）"
+say "  - /tmp/1panel_sequence.err (1Panel sequence steps)" "  - /tmp/1panel_sequence.err（1Panel 顺序执行步骤）"
+say "  - /tmp/podman_start.err (manual start attempt errors)" "  - /tmp/podman_start.err（手动启动尝试错误）"
+say "Quick debug commands (as root):" "快速调试命令（以 root 运行）："
+say "  sudo cat /tmp/podman_enable_direct.err || true" "  sudo cat /tmp/podman_enable_direct.err || true"
+say "  sudo tail -n 200 /tmp/1panel_sequence.err || true" "  sudo tail -n 200 /tmp/1panel_sequence.err || true"
+say "  sudo cat /tmp/podman_start.err || true" "  sudo cat /tmp/podman_start.err || true"
 
 say "Installation complete! If there are issues, check logs or adjust config manually." "安装完成！如果有问题，检查日志或手动调整配置。"
 say "It is recommended to reboot the system or re-login to apply all settings." "建议重启系统或重新登录用户让所有设置生效。"
