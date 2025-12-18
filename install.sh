@@ -198,8 +198,21 @@ sudo loginctl enable-linger docker_usr
 
 say "8. Enable Podman system socket and enable user socket for docker_usr..." "8. 启用 Podman system socket 并为 docker_usr 启用 user socket..."
 sudo systemctl enable --now podman.socket
+
 # 尝试在 docker_usr 的 user systemd 中启用 podman.socket（若没有登录环境或失败则容错）
-sudo -u docker_usr XDG_RUNTIME_DIR=/run/user/1000 systemctl --user enable --now podman.socket || true
+# 如果 /run/user/1000 存在且 user systemd 可用，则直接启用；否则尝试通过 dbus-run-session 回退；若均不可用则显示警告并跳过。
+if [ -d /run/user/1000 ]; then
+    if sudo -u docker_usr XDG_RUNTIME_DIR=/run/user/1000 systemctl --user show-environment >/dev/null 2>&1; then
+        sudo -u docker_usr XDG_RUNTIME_DIR=/run/user/1000 systemctl --user enable --now podman.socket || true
+    elif command -v dbus-run-session >/dev/null 2>&1; then
+        # 在没有可用 user bus 的非交互环境中，dbus-run-session 可以临时提供一个会话以运行 systemctl --user
+        sudo -u docker_usr dbus-run-session -- sh -c 'systemctl --user enable --now podman.socket' || true
+    else
+        say "Warning: cannot contact docker_usr user systemd; skipping user unit enable. You can enable it manually after login or install dbus-user-session." "警告：无法连接 docker_usr 的 user systemd，跳过启用用户单元。登录后或安装 dbus-user-session 后可手动启用。"
+    fi
+else
+    say "Warning: /run/user/1000 not found; skipping enabling podman.socket in user mode for docker_usr." "警告：未发现 /run/user/1000；跳过为 docker_usr 启用 podman.socket 用户模式。"
+fi
 
 say "9. Set DOCKER_HOST in docker_usr's shell config..." "9. 设置 DOCKER_HOST 到 docker_usr 的 shell 配置..."
 # 将 DOCKER_HOST 追加到 docker_usr 的 ~/.bash_profile（若已存在则不重复添加）
