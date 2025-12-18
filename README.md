@@ -16,7 +16,7 @@ You can try using solutions that do not force these features (e.g., Podman + fus
 ### 0) One-Click Installation Script
 
 ```bash
-apt update && apt install -y sudo curl && curl -L -o install.sh https://raw.githubusercontent.com/neko-ski/podman-in-lxc-limited/main/blob/main/install.sh && chmod +x install.sh && sudo ./install.sh && rm -f install.sh
+apt update && apt install -y sudo curl && curl -L -o install.sh https://raw.githubusercontent.com/neko-ski/podman-in-lxc-limited/main/install.sh && chmod +x install.sh && sudo ./install.sh && rm -f install.sh
 
 
 ```
