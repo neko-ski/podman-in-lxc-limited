@@ -10,19 +10,20 @@ LXC 受限内核的服务器无法运行原生 Docker 的常见原因包括：
 
 ---
 
-## 在 Euserv IPv6-only 服务器上的验证（依次执行命令，需要 root 权限或 sudo）
 
-下面命令示例均按顺序给出；请在接受风险（覆盖 `/etc`、以及 `podman system reset -f` 会清空数据）的前提下执行。
-
-
----
-
-### 0) 一键安装脚本
+### 0) 一键式安装执行脚本（推荐）
 
 ```bash
 apt update && apt install -y sudo curl && curl -L -o install.sh https://raw.githubusercontent.com/neko-ski/podman-in-lxc-limited/main/install.sh && chmod +x install.sh && sudo ./install.sh && rm -f install.sh
 
 ```
+
+
+## 在 Euserv IPv6-only 服务器上的验证（依次执行命令，需要 root 权限或 sudo）
+
+下面命令示例均按顺序给出；请在接受风险（覆盖 `/etc`、以及 `podman system reset -f` 会清空数据）的前提下执行。
+
+---
 
 ### 1) 更新系统并安装需要的软件包
 ```bash
