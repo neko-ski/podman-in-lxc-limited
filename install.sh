@@ -66,7 +66,12 @@ say "3. Modify configuration files (use POSIX sed for BusyBox compatibility)..."
 sudo sed -i.bak 's|^[[:space:]]*#\?[[:space:]]*cgroup_manager[[:space:]]*=.*|cgroup_manager = "systemd"|' /etc/containers/containers.conf
 
 # 在 storage.conf 中设置 keyring = false 与 mount_program = "/usr/bin/fuse-overlayfs"
-sudo sed -i.bak 's|^[[:space:]]*#\?[[:space:]]*keyring[[:space:]]*=.*|keyring = false|' /etc/containers/storage.conf
+# 明确将 '#keyring = true'、'keyring = true' 或其他 keyring 行替换为 'keyring = false'；若不存在则追加该行
+if grep -qi '^[[:space:]]*#\?[[:space:]]*keyring[[:space:]]*=' /etc/containers/storage.conf 2>/dev/null; then
+    sudo sed -i.bak -E 's|^[[:space:]]*#?[[:space:]]*keyring[[:space:]]*=.*|keyring = false|' /etc/containers/storage.conf
+else
+    echo 'keyring = false' | sudo tee -a /etc/containers/storage.conf >/dev/null
+fi
 sudo sed -i.bak 's|^[[:space:]]*#\?[[:space:]]*mount_program[[:space:]]*=.*|mount_program = "/usr/bin/fuse-overlayfs"|' /etc/containers/storage.conf
 
 # 在 registries.conf 中启用 unqualified-search-registries = ["docker.io"]（若文件存在）
@@ -166,7 +171,7 @@ if printf '%s' "${COMPOSE_DOWNLOAD_BASE}" | grep -qi 'jsdeliver'; then
     COMPOSE_DOWNLOAD_BASE=$(printf '%s' "${COMPOSE_DOWNLOAD_BASE}" | sed -E 's/jsdeliver/cdn.jsdelivr.net/Ig')
 fi
 
-# 构建候选下载 URL 列表：优先使用 GitHub API 中的 browser_download_url（更可靠），然后使用 COMPOSE_DOWNLOAD_BASE 构造的 URL，最后尝试 ghproxy
+# 构建候选下载 URL 列表：仅包含官方 GitHub（API/browser_download_url 或 releases 下载）和 jsDelivr 镜像
 candidates=()
 if response=$(curl -fsS --connect-timeout 10 "https://api.github.com/repos/docker/compose/releases/tags/${COMPOSE_VER}" 2>/dev/null || true); then
     api_url=$(printf '%s' "$response" | grep -oE '"browser_download_url":\s*"[^"]+"' | sed -E 's/"browser_download_url":\s*"([^"]+)"/\1/' | grep "${asset}" || true)
@@ -174,35 +179,56 @@ if response=$(curl -fsS --connect-timeout 10 "https://api.github.com/repos/docke
         candidates+=("${api_url}")
     fi
 fi
-# 默认构造 URL
-candidates+=("${COMPOSE_DOWNLOAD_BASE}/${COMPOSE_VER}/${asset}")
-# ghproxy 作为备选
-candidates+=("https://ghproxy.com/https://github.com/docker/compose/releases/download/${COMPOSE_VER}/${asset}")
+# 官方 GitHub releases 下载 URL
+candidates+=("https://github.com/docker/compose/releases/download/${COMPOSE_VER}/${asset}")
+# jsDelivr 镜像作为备选
+candidates+=("https://cdn.jsdelivr.net/gh/docker/compose/releases/download/${COMPOSE_VER}/${asset}")
 
-# 尝试下载
+# IPv4/IPv6 可达性检测：确定优先使用哪种协议（若仅一方可达则优先使用）
+ipv6_ok=0; ipv4_ok=0
+if curl -fsS --connect-timeout 5 --max-time 10 --ipv6 https://api.github.com/ >/dev/null 2>&1; then ipv6_ok=1; fi
+if curl -fsS --connect-timeout 5 --max-time 10 --ipv4 https://api.github.com/ >/dev/null 2>&1; then ipv4_ok=1; fi
+PREFERRED_CURL_OPTS=""
+if [ "$ipv6_ok" -eq 1 ] && [ "$ipv4_ok" -eq 0 ]; then
+    PREFERRED_CURL_OPTS="--ipv6"
+    say "Detected IPv6-only connectivity; preferring curl --ipv6 for GitHub requests" "检测到仅 IPv6 可达，将优先使用 curl --ipv6 访问 GitHub"
+elif [ "$ipv4_ok" -eq 1 ] && [ "$ipv6_ok" -eq 0 ]; then
+    PREFERRED_CURL_OPTS="--ipv4"
+    say "Detected IPv4-only connectivity; preferring curl --ipv4 for GitHub requests" "检测到仅 IPv4 可达，将优先使用 curl --ipv4 访问 GitHub"
+else
+    PREFERRED_CURL_OPTS=""
+fi
+
+# 尝试下载（对每个 URL 先尝试偏好协议，再系统默认，再显式 --ipv6/--ipv4）
 tmpfile=$(mktemp)
 success=0
 for url in "${candidates[@]}"; do
     say "Attempting download from: ${url}" "尝试从 ${url} 下载"
-    if curl -fSL --retry 5 --retry-connrefused --retry-delay 3 --connect-timeout 10 -o "${tmpfile}" "${url}"; then
-        size=$(wc -c < "${tmpfile}" 2>/dev/null || echo 0)
-        if [ "${size}" -lt 20000 ]; then
-            say "Downloaded file from ${url} is small (${size} bytes), likely an error page; trying next candidate..." "从 ${url} 下载的文件很小 (${size} 字节)，很可能是错误页；尝试下一个候选 URL..."
-            rm -f "${tmpfile}"
-            continue
-        fi
-        # 检查 ELF magic bytes
-        if head -c 4 "${tmpfile}" | od -An -t x1 | grep -q '7f 45 4c 46'; then
-            success=1
-            break
+    for opt in "${PREFERRED_CURL_OPTS}" "" "--ipv6" "--ipv4"; do
+        if [ -z "${opt}" ]; then
+            say "  Trying curl (default IP stack) -> ${url}" "  使用系统默认 IP 访问 -> ${url}"
         else
-            say "Downloaded file from ${url} doesn't look like an ELF binary; trying next candidate..." "从 ${url} 下载的文件看起来不是 ELF 二进制；尝试下一个候选 URL..."
-            rm -f "${tmpfile}"
-            continue
+            say "  Trying curl ${opt} -> ${url}" "  使用 curl ${opt} 访问 -> ${url}"
         fi
-    else
-        say "Failed to download from ${url}; trying next candidate..." "无法从 ${url} 下载；尝试下一个候选 URL..."
-    fi
+        if curl -fSL --retry 3 --retry-connrefused --retry-delay 2 --connect-timeout 10 ${opt} -o "${tmpfile}" "${url}"; then
+            size=$(wc -c < "${tmpfile}" 2>/dev/null || echo 0)
+            if [ "${size}" -lt 20000 ]; then
+                say "  Downloaded file small (${size} bytes), likely an error page; trying next candidate" "  下载文件很小 (${size} 字节)，可能是错误页；尝试下一个候选"
+                rm -f "${tmpfile}"
+                break
+            fi
+            if head -c 4 "${tmpfile}" | od -An -t x1 | grep -q '7f 45 4c 46'; then
+                success=1
+                break 2
+            else
+                say "  Downloaded file doesn't look like ELF; trying next candidate" "  下载文件看起来不是 ELF；尝试下一个候选"
+                rm -f "${tmpfile}"
+                break
+            fi
+        else
+            say "  curl ${opt:-(default)} failed for ${url}" "  curl ${opt:-(默认)} 访问 ${url} 失败"
+        fi
+    done
 done
 
 if [ "${success}" -eq 1 ]; then
@@ -219,7 +245,7 @@ else
     for url in "${candidates[@]}"; do
         say "  - ${url}" "  - ${url}"
     done
-    say "If you are behind a firewall or your network blocks GitHub, consider setting COMPOSE_DOWNLOAD_BASE to a reachable mirror or download manually from: https://github.com/docker/compose/releases" "如果您处于防火墙后或网络屏蔽 GitHub，请考虑将 COMPOSE_DOWNLOAD_BASE 指向可用镜像，或手动从 https://github.com/docker/compose/releases 下载。"
+    say "If you are behind a firewall or your network blocks GitHub, consider setting COMPOSE_DOWNLOAD_BASE to a reachable mirror (only jsDelivr or GitHub are supported) or download manually from: https://github.com/docker/compose/releases" "如果您处于防火墙后或网络屏蔽 GitHub，请考虑将 COMPOSE_DOWNLOAD_BASE 指向可用镜像（仅支持 jsDelivr 或 GitHub），或手动从 https://github.com/docker/compose/releases 下载。"
     rm -f "${tmpfile}" || true
 fi
 
