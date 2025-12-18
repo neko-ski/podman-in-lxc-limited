@@ -157,34 +157,68 @@ if command -v docker-compose >/dev/null 2>&1; then
 fi
 
 # 可通过环境变量 COMPOSE_DOWNLOAD_BASE 指定备用下载基地址（例如使用镜像站）
-COMPOSE_DOWNLOAD_BASE="${COMPOSE_DOWNLOAD_BASE:-https://cdn.jsdeliver.net/gh/docker/compose/releases/download}"
+# 默认使用官方 releases download 路径
+COMPOSE_DOWNLOAD_BASE="${COMPOSE_DOWNLOAD_BASE:-https://github.com/docker/compose/releases/download}"
 
+# 检查是否有常见拼写错误（例如 jsdeliver -> jsdelivr），若发现则自动修正并提示
+if printf '%s' "${COMPOSE_DOWNLOAD_BASE}" | grep -qi 'jsdeliver'; then
+    say "Warning: COMPOSE_DOWNLOAD_BASE appears to contain 'jsdeliver' which is likely a typo; auto-correcting to 'cdn.jsdelivr.net'" "警告：COMPOSE_DOWNLOAD_BASE 看起来包含 'jsdeliver'，可能是拼写错误；已自动修正为 'cdn.jsdelivr.net'"
+    COMPOSE_DOWNLOAD_BASE=$(printf '%s' "${COMPOSE_DOWNLOAD_BASE}" | sed -E 's/jsdeliver/cdn.jsdelivr.net/Ig')
+fi
+
+# 构建候选下载 URL 列表：优先使用 GitHub API 中的 browser_download_url（更可靠），然后使用 COMPOSE_DOWNLOAD_BASE 构造的 URL，最后尝试 ghproxy
+candidates=()
+if response=$(curl -fsS --connect-timeout 10 "https://api.github.com/repos/docker/compose/releases/tags/${COMPOSE_VER}" 2>/dev/null || true); then
+    api_url=$(printf '%s' "$response" | grep -oE '"browser_download_url":\s*"[^"]+"' | sed -E 's/"browser_download_url":\s*"([^"]+)"/\1/' | grep "${asset}" || true)
+    if [ -n "${api_url}" ]; then
+        candidates+=("${api_url}")
+    fi
+fi
+# 默认构造 URL
+candidates+=("${COMPOSE_DOWNLOAD_BASE}/${COMPOSE_VER}/${asset}")
+# ghproxy 作为备选
+candidates+=("https://ghproxy.com/https://github.com/docker/compose/releases/download/${COMPOSE_VER}/${asset}")
+
+# 尝试下载
 tmpfile=$(mktemp)
-url="${COMPOSE_DOWNLOAD_BASE}/${COMPOSE_VER}/${asset}"
-# 使用更稳健的 curl 选项：重试、重试间隔、连接超时
-if curl -fSL --retry 5 --retry-connrefused --retry-delay 3 --connect-timeout 10 -o "${tmpfile}" "${url}"; then
-    size=$(wc -c < "${tmpfile}" 2>/dev/null || echo 0)
-    # 某些发布的二进制会较小，但太小通常表示错误页面或 HTML，设阈值为 20KB
-    if [ "${size}" -lt 20000 ]; then
-        say "Warning: downloaded ${asset} is small (${size} bytes), likely invalid; skipping." "警告：下载的 ${asset} 文件很小 (${size} 字节)，可能无效，跳过安装。"
-        rm -f "${tmpfile}"
-    else
+success=0
+for url in "${candidates[@]}"; do
+    say "Attempting download from: ${url}" "尝试从 ${url} 下载"
+    if curl -fSL --retry 5 --retry-connrefused --retry-delay 3 --connect-timeout 10 -o "${tmpfile}" "${url}"; then
+        size=$(wc -c < "${tmpfile}" 2>/dev/null || echo 0)
+        if [ "${size}" -lt 20000 ]; then
+            say "Downloaded file from ${url} is small (${size} bytes), likely an error page; trying next candidate..." "从 ${url} 下载的文件很小 (${size} 字节)，很可能是错误页；尝试下一个候选 URL..."
+            rm -f "${tmpfile}"
+            continue
+        fi
         # 检查 ELF magic bytes
         if head -c 4 "${tmpfile}" | od -An -t x1 | grep -q '7f 45 4c 46'; then
-            sudo chmod +x "${tmpfile}"
-            sudo mv "${tmpfile}" /usr/local/bin/docker-compose
-            if docker-compose -v >/dev/null 2>&1; then
-                say "Installed docker-compose ${COMPOSE_VER} at /usr/local/bin/docker-compose" "已安装 docker-compose ${COMPOSE_VER} 到 /usr/local/bin/docker-compose"
-            else
-                say "Warning: docker-compose installed but 'docker-compose -v' failed" "警告：docker-compose 已安装但 'docker-compose -v' 失败"
-            fi
+            success=1
+            break
         else
-            say "Warning: downloaded file doesn't look like an ELF binary; skipping install." "警告：下载的文件看起来不是 ELF 二进制，跳过安装。"
+            say "Downloaded file from ${url} doesn't look like an ELF binary; trying next candidate..." "从 ${url} 下载的文件看起来不是 ELF 二进制；尝试下一个候选 URL..."
             rm -f "${tmpfile}"
+            continue
         fi
+    else
+        say "Failed to download from ${url}; trying next candidate..." "无法从 ${url} 下载；尝试下一个候选 URL..."
+    fi
+done
+
+if [ "${success}" -eq 1 ]; then
+    sudo chmod +x "${tmpfile}"
+    sudo mv "${tmpfile}" /usr/local/bin/docker-compose
+    if docker-compose -v >/dev/null 2>&1; then
+        say "Installed docker-compose ${COMPOSE_VER} at /usr/local/bin/docker-compose" "已安装 docker-compose ${COMPOSE_VER} 到 /usr/local/bin/docker-compose"
+    else
+        say "Warning: docker-compose installed but 'docker-compose -v' failed" "警告：docker-compose 已安装但 'docker-compose -v' 失败"
     fi
 else
-    say "Warning: download of docker-compose ${COMPOSE_VER} from ${url} failed; skipping v2 installation." "警告：从 ${url} 下载 docker-compose ${COMPOSE_VER} 失败，跳过 v2 安装。"
+    say "Warning: all download attempts failed for docker-compose ${COMPOSE_VER}; skipping v2 installation." "警告：对 docker-compose ${COMPOSE_VER} 的所有下载尝试均失败，跳过 v2 安装。"
+    say "Attempted URLs:" "尝试的 URL 列表："
+    for url in "${candidates[@]}"; do
+        say "  - ${url}" "  - ${url}"
+    done
     say "If you are behind a firewall or your network blocks GitHub, consider setting COMPOSE_DOWNLOAD_BASE to a reachable mirror or download manually from: https://github.com/docker/compose/releases" "如果您处于防火墙后或网络屏蔽 GitHub，请考虑将 COMPOSE_DOWNLOAD_BASE 指向可用镜像，或手动从 https://github.com/docker/compose/releases 下载。"
     rm -f "${tmpfile}" || true
 fi
