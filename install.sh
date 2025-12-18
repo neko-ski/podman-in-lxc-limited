@@ -26,13 +26,29 @@ trap 'show_error' ERR
 echo "Select language / 选择语言:"
 echo "1) English"
 echo "2) 中文"
-read -rp "Choice [1/2]: " LANG_CHOICE
-# Trim CR/LF and surrounding whitespace to tolerate Windows CRLF line endings or extra spaces
-LANG_CHOICE="$(printf '%s' "${LANG_CHOICE:-}" | tr -d '\r' | tr -d '[:space:]')"
-if [ "$LANG_CHOICE" != "1" ] && [ "$LANG_CHOICE" != "2" ]; then
-    echo "Invalid choice, defaulting to English / 无效选择，默认 English"
-    LANG_CHOICE=1
-fi
+# 允许单键选择或回车超时默认；最多重试 3 次，避免在非交互环境中无限阻塞
+attempts=0
+while :; do
+    attempts=$((attempts+1))
+    # 优先接受单键输入（等待 10 秒）。若超时则尝试一次阻塞输入（用户可按 Enter 以默认）
+    if read -r -n1 -t 10 -p $'Choice [1/2]: ' LANG_CHOICE_TMP 2>/dev/null; then
+        LANG_CHOICE="${LANG_CHOICE_TMP}"
+        printf '\n'
+    else
+        read -r -p "Choice [1/2] (press Enter to default to English): " LANG_CHOICE
+    fi
+    # Trim CR/LF and surrounding whitespace to tolerate Windows CRLF line endings or extra spaces
+    LANG_CHOICE="$(printf '%s' "${LANG_CHOICE:-}" | tr -d '\r' | tr -d '[:space:]')"
+    if [ "$LANG_CHOICE" = "1" ] || [ "$LANG_CHOICE" = "2" ]; then
+        break
+    fi
+    if [ "$attempts" -ge 3 ]; then
+        echo "Invalid choice or no response, defaulting to English / 无效选择或无响应，默认 English"
+        LANG_CHOICE=1
+        break
+    fi
+    echo "Please enter 1 or 2 / 请输入 1 或 2"
+done
 
 # say 函数：根据语言打印消息，参数1=English, 参数2=中文
 say() {
@@ -361,13 +377,57 @@ verify_install() {
 
     # root 下的客户端检查
     (docker -v >/dev/null 2>&1) && say "  [OK] root: docker -v" "  [OK] root: docker -v" || { say "  [FAIL] root: docker -v" "  [FAIL] root: docker -v"; failed=$((failed+1)); }
-    (docker-compose -v >/dev/null 2>&1) && say "  [OK] root: docker-compose -v" "  [OK] root: docker-compose -v" || { say "  [FAIL] root: docker-compose -v" "  [FAIL] root: docker-compose -v"; failed=$((failed+1)); }
+
+    # 检测 docker compose v2 插件或 docker-compose 二进制（兼容 v1/v2）
+    if docker compose version >/dev/null 2>&1; then
+        say "  [OK] root: docker compose (v2 plugin) detected: $(docker compose version 2>/dev/null | head -n1 || true)" "  [OK] root: docker compose (v2 插件) 检测到: $(docker compose version 2>/dev/null | head -n1 || true)"
+    elif command -v docker-compose >/dev/null 2>&1 && docker-compose -v >/dev/null 2>&1; then
+        say "  [OK] root: docker-compose (binary) detected: $(docker-compose -v 2>/dev/null | sed 's/^//')" "  [OK] root: docker-compose (二进制) 检测到: $(docker-compose -v 2>/dev/null | sed 's/^//')"
+    else
+        say "  [FAIL] No docker compose (v2 plugin) nor docker-compose (v1 binary) detected" "  [FAIL] 未检测到 docker compose(v2) 或 docker-compose(v1)"
+        failed=$((failed+1))
+    fi
+
     (podman -v >/dev/null 2>&1) && say "  [OK] root: podman -v" "  [OK] root: podman -v" || { say "  [FAIL] root: podman -v" "  [FAIL] root: podman -v"; failed=$((failed+1)); }
 
     # docker_usr 用户下的检查（通过 DOCKER_HOST 指向 rootless socket）
     sudo -u docker_usr bash -lc 'export DOCKER_HOST=unix:///run/user/1000/docker.sock && docker -v' >/dev/null 2>&1 && say "  [OK] docker_usr: docker -v" "  [OK] docker_usr: docker -v" || { say "  [FAIL] docker_usr: docker -v" "  [FAIL] docker_usr: docker -v"; failed=$((failed+1)); }
-    sudo -u docker_usr bash -lc 'export DOCKER_HOST=unix:///run/user/1000/docker.sock && docker-compose -v' >/dev/null 2>&1 && say "  [OK] docker_usr: docker-compose -v" "  [OK] docker_usr: docker-compose -v" || { say "  [FAIL] docker_usr: docker-compose -v" "  [FAIL] docker_usr: docker-compose -v"; failed=$((failed+1)); }
+    sudo -u docker_usr bash -lc 'export DOCKER_HOST=unix:///run/user/1000/docker.sock && (docker compose version >/dev/null 2>&1 || docker-compose -v >/dev/null 2>&1)' >/dev/null 2>&1 && say "  [OK] docker_usr: docker-compose/compose available" "  [OK] docker_usr: docker-compose/compose 可用" || { say "  [WARN] docker_usr: docker-compose/compose not available" "  [WARN] docker_usr: docker-compose/compose 不可用"; failed=$((failed+1)); }
     sudo -u docker_usr podman -v >/dev/null 2>&1 && say "  [OK] docker_usr: podman -v" "  [OK] docker_usr: podman -v" || { say "  [FAIL] docker_usr: podman -v" "  [FAIL] docker_usr: podman -v"; failed=$((failed+1)); }
+
+    # Compose 保活检测：检查由 compose 管理的容器的重启策略
+    if command -v docker >/dev/null 2>&1; then
+        compose_cids=$(docker ps -a --filter label=com.docker.compose.project -q 2>/dev/null || true)
+        if [ -n "$compose_cids" ]; then
+            for c in $compose_cids; do
+                name=$(docker inspect -f '{{.Name}}' "$c" 2>/dev/null | sed 's|/||')
+                rp=$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$c" 2>/dev/null || echo "")
+                if [ -z "$rp" ] || [ "$rp" = "no" ]; then
+                    say "  [WARN] compose container $name restart policy='$rp' (recommend 'always' or 'unless-stopped')" "  [WARN] compose 容器 $name 的重启策略为 '$rp'（建议 'always' 或 'unless-stopped'）"
+                    failed=$((failed+1))
+                else
+                    say "  [OK] compose container $name restart policy: $rp" "  [OK] compose 容器 $name 的重启策略: $rp"
+                fi
+            done
+        else
+            say "  [INFO] No compose-managed containers detected" "  [INFO] 未检测到 compose 管理的容器"
+        fi
+    fi
+
+    # Socket / service 保活检测：检查 Restart 策略与单元状态
+    for unit in docker.service docker.socket podman.socket; do
+        if systemctl list-unit-files | grep -q "^${unit}"; then
+            state=$(systemctl show -p ActiveState --value ${unit} 2>/dev/null || echo unknown)
+            restart=$(systemctl show -p Restart --value ${unit} 2>/dev/null || echo "")
+            restartsec=$(systemctl show -p RestartSec --value ${unit} 2>/dev/null || echo "")
+            say "  [INFO] ${unit} ActiveState=${state} Restart=${restart} RestartSec=${restartsec}" "  [INFO] ${unit} ActiveState=${state} Restart=${restart} RestartSec=${restartsec}"
+            # 如果是 service 且没有设置 Restart，则提示警告
+            if echo "${unit}" | grep -q '\\ .service$' && { [ -z "$restart" ] || [ "$restart" = "no" ]; }; then
+                say "  [WARN] ${unit} has no Restart policy set (consider 'Restart=always' or similar)" "  [WARN] ${unit} 未设置 Restart 策略（建议 'Restart=always'）"
+                failed=$((failed+1))
+            fi
+        fi
+    done
 
     if [ "$failed" -eq 0 ]; then
         say "Verification passed: all checks succeeded." "验证通过：所有检查项均通过。"
